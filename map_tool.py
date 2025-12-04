@@ -197,7 +197,7 @@ def sanitize_place_name(place_name: str) -> str:
         # Check for "British Columbia" -> "BC" style
         words = second.split()
         if len(words) >= 2:
-            abbrev = "".join(w[0].upper() for w in words if w[0].isupper() or w[0].islower())
+            abbrev = "".join(w[0].upper() for w in words if w[0].isalpha())
             slug = f"{parts[0]}_{abbrev}"
         else:
             slug = f"{parts[0]}_{second[:2].upper()}"
