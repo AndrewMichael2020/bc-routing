@@ -39,9 +39,10 @@ venv.bak/
 
 # Data directories
 data/
+raw/
 
 # GraphML files (exclude from repo to avoid large files)
-*.graphml
+.graphml
 
 # OS files
 .DS_Store
