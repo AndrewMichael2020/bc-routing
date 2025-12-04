@@ -250,19 +250,28 @@ def main():
                 length_km = (length_m or 0.0) / 1000.0
                 time_min = (time_sec or 0.0) / 60.0
 
+                # origin/destination coordinates (always present for written rows)
+                o_nd = G.nodes.get(origin, {})
+                d_nd = G.nodes.get(patient, {})
+                o_lat, o_lon = o_nd.get("y"), o_nd.get("x")
+                d_lat, d_lon = d_nd.get("y"), d_nd.get("x")
+
                 route_id += 1
                 rows.append({
                     "route_id": route_id,
                     "nurse_id": nurse_id,
                     "origin": origin,
                     "destination": patient,
+                    "origin_lat": o_lat,
+                    "origin_lon": o_lon,
+                    "dest_lat": d_lat,
+                    "dest_lon": d_lon,
                     "nodes_in_path": len(path),
                     "length_km": round(length_km, 3),
                     "travel_min": round(time_min, 2),
                 })
                 route_paths.append((route_id, nurse_id, path, length_km, time_min))
                 print(f"  Route {route_id}: {nurse_id} {origin} -> {patient} | {length_km:.3f} km | {time_min:.2f} min")
-
             if args.mem_debug:
                 memory_report(f"After processing patients for {nurse_id}")
 
@@ -300,19 +309,28 @@ def main():
                 length_km = (length_m or 0.0) / 1000.0
                 time_min = (time_sec or 0.0) / 60.0
 
+                # origin/destination coordinates (always present for written rows)
+                o_nd = G.nodes.get(origin, {})
+                d_nd = G.nodes.get(dest, {})
+                o_lat, o_lon = o_nd.get("y"), o_nd.get("x")
+                d_lat, d_lon = d_nd.get("y"), d_nd.get("x")
+
                 route_id += 1
                 rows.append({
                     "route_id": route_id,
                     "nurse_id": f"nurse_{i}",
                     "origin": origin,
                     "destination": dest,
+                    "origin_lat": o_lat,
+                    "origin_lon": o_lon,
+                    "dest_lat": d_lat,
+                    "dest_lon": d_lon,
                     "nodes_in_path": len(path),
                     "length_km": round(length_km, 3),
                     "travel_min": round(time_min, 2),
                 })
                 # keep the full path for mapping
                 route_paths.append((route_id, f"nurse_{i}", path, length_km, time_min))
-
                 print(f"Route {route_id}: nurse_{i} {origin} -> {dest} | {length_km:.3f} km | {time_min:.2f} min")
 
                 assigned += 1
@@ -371,7 +389,22 @@ def main():
     outp = Path(args.output)
     outp.parent.mkdir(parents=True, exist_ok=True)
     with outp.open("w", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=["route_id", "nurse_id", "origin", "destination", "nodes_in_path", "length_km", "travel_min"])
+        writer = csv.DictWriter(
+            fh,
+            fieldnames=[
+                "route_id",
+                "nurse_id",
+                "origin",
+                "destination",
+                "origin_lat",
+                "origin_lon",
+                "dest_lat",
+                "dest_lon",
+                "nodes_in_path",
+                "length_km",
+                "travel_min",
+            ],
+        )
         writer.writeheader()
         for r in rows:
             writer.writerow(r)

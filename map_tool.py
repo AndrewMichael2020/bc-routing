@@ -564,11 +564,23 @@ def calculate_stats(filepath: Path) -> int:
     unpaved_km = calculate_edge_length_km(graph, is_unpaved)
     total_km = calculate_edge_length_km(graph, lambda _: True)
 
-    # Calculate tracktype histogram
+    # Calculate tracktype histogram (normalize possible list/mixed values)
     tracktype_counts = {"grade1": 0, "grade2": 0, "grade3": 0, "grade4": 0, "grade5": 0}
     for u, v, data in graph.edges(data=True):
         if data.get("highway") == "track":
-            tracktype = data.get("tracktype", "unknown")
+            raw_tracktype = data.get("tracktype", "unknown")
+
+            # Normalize tracktype to a single lowercase string
+            if isinstance(raw_tracktype, list):
+                candidates = [str(x).strip().lower() for x in raw_tracktype if str(x).strip()]
+                tracktype = candidates[0] if candidates else "unknown"
+            else:
+                tracktype = (
+                    str(raw_tracktype).strip().lower()
+                    if raw_tracktype is not None
+                    else "unknown"
+                )
+
             if tracktype in tracktype_counts:
                 tracktype_counts[tracktype] += 1
 
