@@ -37,7 +37,7 @@ venv.bak/
 *~
 
 # Data directories
-data/
+# data/
 
 # GraphML files (exclude from repo to avoid large files)
 # *.graphml
