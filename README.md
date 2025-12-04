@@ -33,6 +33,34 @@ Download street network data for a place:
 python map_tool.py fetch "Langley, British Columbia, Canada" --output-dir ./data/raw
 ```
 
+```import osmnx as ox
+
+# choose a radius large enough to cover wilderness area (e.g. 10–50 km)
+point = (49.38, -121.44)   # example: Alvin-ish / Hope corridor
+dist_m = 40000
+
+# custom filter to include tracks, service roads, unclassified, residential etc.
+custom_filter = (
+  '["highway"~"track|path|service|unclassified|residential|primary|secondary|tertiary|road|bridleway|cycleway"]'
+)
+
+G = ox.graph_from_point(point, dist=dist_m, network_type="all", custom_filter=custom_filter, retain_all=True)
+ox.save_graphml(G, "data/raw/Wilderness_Alvin__20251204.graphml")```
+
+```import osmnx as ox
+place = "Garibaldi Provincial Park, British Columbia, Canada"
+gdf = ox.geocode_to_gdf(place)      # gets polygon for many relations
+poly = gdf.geometry.iloc[0]
+
+custom_filter = (
+  '["highway"~"track|path|service|unclassified|bridleway|cycleway|path|footway"]'
+)
+
+G = ox.graph_from_polygon(poly, network_type="all", custom_filter=custom_filter, retain_all=True)
+ox.save_graphml(G, "data/raw/Garibaldi_wilderness__20251204.graphml") ```
+
+
+
 Options:
 - `--output-dir`: Directory to save the output file (required)
 - `--output-name`: Custom output filename (default: `PLACE_SLUG__YYYYMMDD.graphml`)

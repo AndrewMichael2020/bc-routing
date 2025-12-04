@@ -12,6 +12,7 @@ import argparse
 import csv
 import random
 import sys
+import time
 from pathlib import Path
 
 import networkx as nx
@@ -20,6 +21,11 @@ try:
     import folium
 except Exception:
     folium = None
+
+try:
+    import psutil
+except Exception:
+    psutil = None
 
 
 def ensure_numeric_edge_attrs(G, attrs=("length", "travel_time")):
@@ -34,6 +40,19 @@ def ensure_numeric_edge_attrs(G, attrs=("length", "travel_time")):
                 except Exception:
                     # leave as-is if conversion fails
                     pass
+
+
+def memory_report(prefix: str = "") -> None:
+    """Print a simple memory usage line if psutil is available."""
+    if psutil is None:
+        return
+    try:
+        p = psutil.Process()
+        rss_mb = p.memory_info().rss / (1024 * 1024)
+        print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {prefix} RSS={rss_mb:.1f} MB")
+    except Exception:
+        # best-effort only
+        return
 
 
 def select_valid_nodes(G, count, min_degree=1, seed=None):
@@ -77,6 +96,7 @@ def main():
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--output", default="./data/routes_summary.csv")
     p.add_argument("--map-output", default="./data/routes_map.html", help="Optional HTML map output (requires folium)")
+    p.add_argument("--mem-debug", action="store_true", help="Print memory usage at key steps (requires psutil)")
     args = p.parse_args()
 
     graph_path = Path(args.graph)
@@ -87,8 +107,14 @@ def main():
     print(f"Loading graph from {graph_path}...")
     G = ox.load_graphml(graph_path)
 
+    if args.mem_debug:
+        memory_report("After loading graph")
+
     # normalize numeric edge attributes we will use
     ensure_numeric_edge_attrs(G, attrs=("length", "travel_time"))
+
+    if args.mem_debug:
+        memory_report("After ensure_numeric_edge_attrs")
 
     # choose weight preference
     weight_attr = "travel_time" if any(
@@ -127,62 +153,69 @@ def main():
 
         print(f"Placing {len(nurses)} nurses across {len(hub_nodes)} hubs; {len(patients)} patients")
 
-        # precompute shortest path lengths from each nurse to all nodes (use Dijkstra single-source)
-        nurse_costs = {}
-        for nurse_id, origin in nurses:
-            try:
-                costs = nx.single_source_dijkstra_path_length(G, origin, weight=weight_attr)
-            except Exception:
-                costs = {}
-            nurse_costs[nurse_id] = (origin, costs)
+        if args.mem_debug:
+            memory_report("After selecting hubs/nurses/patients")
 
-        # assign each patient to nearest nurse
-        for patient in patients:
-            best = None
-            best_cost = None
-            best_origin = None
-            for nurse_id, (origin, costs) in nurse_costs.items():
-                c = costs.get(patient)
-                if c is None:
+        # For efficiency, process each nurse separately: single-source Dijkstra per nurse
+        total_patients = len(patients)
+        print("Computing routes nurse-by-nurse (single-source Dijkstra)...")
+
+        # simple round-robin assignment of patients to nurses
+        nurse_patient_lists = {nid: [] for nid, _ in nurses}
+        for idx, patient in enumerate(patients):
+            nurse_id, origin = nurses[idx % len(nurses)]
+            nurse_patient_lists[nurse_id].append(patient)
+
+        for idx, (nurse_id, origin) in enumerate(nurses, start=1):
+            assigned_patients = nurse_patient_lists.get(nurse_id, [])
+            if not assigned_patients:
+                continue
+
+            print(f"Nurse {nurse_id}: origin {origin}, {len(assigned_patients)} patients")
+            if args.mem_debug:
+                memory_report(f"Before Dijkstra for {nurse_id}")
+
+            try:
+                lengths, paths = nx.single_source_dijkstra(G, origin, weight=weight_attr)
+            except Exception as e:
+                print(f"  Dijkstra failed for {nurse_id}: {e}")
+                continue
+
+            if args.mem_debug:
+                memory_report(f"After Dijkstra for {nurse_id}")
+
+            for patient in assigned_patients:
+                path = paths.get(patient)
+                if not path:
+                    print(f"  No path to patient {patient} for {nurse_id}; skipping")
                     continue
-                if best_cost is None or c < best_cost:
-                    best_cost = c
-                    best = nurse_id
-                    best_origin = origin
-            if best is None:
-                # no reachable nurse for this patient
-                print(f"No reachable nurse found for patient node {patient}; skipping")
-                continue
 
-            try:
-                path = nx.shortest_path(G, best_origin, patient, weight=weight_attr)
-            except (nx.NetworkXNoPath, nx.NodeNotFound):
-                print(f"No path to patient {patient} from nurse {best}; skipping")
-                continue
+                # compute metrics
+                if weight_attr == "length":
+                    length_m = route_summary(G, path, weight_attr="length")
+                    time_sec = route_summary(G, path, weight_attr="travel_time")
+                else:
+                    time_sec = route_summary(G, path, weight_attr="travel_time")
+                    length_m = route_summary(G, path, weight_attr="length")
 
-            # compute metrics
-            if weight_attr == "length":
-                length_m = route_summary(G, path, weight_attr="length")
-                time_sec = route_summary(G, path, weight_attr="travel_time")
-            else:
-                time_sec = route_summary(G, path, weight_attr="travel_time")
-                length_m = route_summary(G, path, weight_attr="length")
+                length_km = (length_m or 0.0) / 1000.0
+                time_min = (time_sec or 0.0) / 60.0
 
-            length_km = (length_m or 0.0) / 1000.0
-            time_min = (time_sec or 0.0) / 60.0
+                route_id += 1
+                rows.append({
+                    "route_id": route_id,
+                    "nurse_id": nurse_id,
+                    "origin": origin,
+                    "destination": patient,
+                    "nodes_in_path": len(path),
+                    "length_km": round(length_km, 3),
+                    "travel_min": round(time_min, 2),
+                })
+                route_paths.append((route_id, nurse_id, path, length_km, time_min))
+                print(f"  Route {route_id}: {nurse_id} {origin} -> {patient} | {length_km:.3f} km | {time_min:.2f} min")
 
-            route_id += 1
-            rows.append({
-                "route_id": route_id,
-                "nurse_id": best,
-                "origin": best_origin,
-                "destination": patient,
-                "nodes_in_path": len(path),
-                "length_km": round(length_km, 3),
-                "travel_min": round(time_min, 2),
-            })
-            route_paths.append((route_id, best, path, length_km, time_min))
-            print(f"Route {route_id}: {best} {best_origin} -> {patient} | {length_km:.3f} km | {time_min:.2f} min")
+            if args.mem_debug:
+                memory_report(f"After processing patients for {nurse_id}")
 
     else:
         # fallback: previous behaviour (nurses origins sampled, routes per nurse)
@@ -195,6 +228,8 @@ def main():
         for i, origin in enumerate(nurse_origins, start=1):
             assigned = 0
             attempts = 0
+            if args.mem_debug:
+                memory_report(f"Before routing for nurse_{i}")
             while assigned < args.routes_per and attempts < max_attempts:
                 attempts += 1
                 dest = random.choice(candidates)
@@ -293,6 +328,9 @@ def main():
             writer.writerow(r)
 
     print(f"Wrote {len(rows)} routes to {outp}")
+
+    if args.mem_debug:
+        memory_report("After writing CSV")
 
     # Generate folium map if requested and folium is available
     map_out = Path(args.map_output)
