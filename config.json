@@ -1,0 +1,7 @@
+{
+    "overpass_timeout": 180,
+    "overpass_memory": 1073741824,
+    "overpass_endpoint": null,
+    "data_root": "./data",
+    "extra_useful_tags": []
+}
