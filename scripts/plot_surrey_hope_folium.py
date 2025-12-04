@@ -12,7 +12,7 @@ import osmnx as ox
 
 
 def main():
-    graph_path = Path("data/master/merged.graphml")
+    graph_path = Path("data/master/merged_with_times.graphml")
     if not graph_path.exists():
         print("Graph file not found:", graph_path)
         sys.exit(2)
