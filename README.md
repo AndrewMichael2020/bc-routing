@@ -55,7 +55,7 @@ python map_tool.py merge --folder ./data/raw --output ./data/master/merged.graph
 Display statistics for a network file:
 
 ```bash
-python map_tool.py stats ./data/raw/Langley_BC__20241201.graphml
+python map_tool.py stats ./data/master/merged.graphml
 ```
 
 Output includes:

@@ -259,6 +259,37 @@ def calculate_edge_length_km(graph: nx.MultiDiGraph, filter_func) -> float:
     return total_meters / 1000.0
 
 
+def _extract_surface_values(data):
+    """
+    Extract surface tag values from an edge data dict as a list of normalized strings.
+
+    Handles cases where the `surface` tag is a string, a list, or None. Splits
+    string values on common separators (comma/semicolon/pipe) and normalizes
+    whitespace and casing.
+    """
+    surface = data.get("surface")
+    if surface is None:
+        return []
+
+    values = []
+    if isinstance(surface, list):
+        values = surface
+    elif isinstance(surface, str):
+        # split on common separators used in OSM tag values
+        parts = re.split(r"[;,|]\\s*", surface)
+        values = parts
+    else:
+        # unexpected type: try to convert to string
+        try:
+            values = [str(surface)]
+        except Exception:
+            return []
+
+    # normalize
+    normalized = [v.strip().lower() for v in values if isinstance(v, str) and v.strip()]
+    return normalized
+
+
 # =============================================================================
 # Fetch Command
 # =============================================================================
@@ -378,12 +409,17 @@ def print_fetch_summary(graph: nx.MultiDiGraph) -> None:
 
     # Calculate lengths for different categories
     def is_paved(data):
-        surface = data.get("surface", "")
-        return surface in PAVED_SURFACES
+        surfaces = _extract_surface_values(data)
+        if not surfaces:
+            return False
+        return any(s in PAVED_SURFACES for s in surfaces)
 
     def is_unpaved(data):
-        surface = data.get("surface")
-        return surface is not None and surface not in PAVED_SURFACES
+        surfaces = _extract_surface_values(data)
+        if not surfaces:
+            return False
+        # unpaved if we have at least one surface value and none are in paved set
+        return not any(s in PAVED_SURFACES for s in surfaces)
 
     def is_track(data):
         return data.get("highway") == "track"
@@ -516,8 +552,10 @@ def calculate_stats(filepath: Path) -> int:
         return data.get("access") == "private"
 
     def is_unpaved(data):
-        surface = data.get("surface")
-        return surface is not None and surface not in PAVED_SURFACES
+        surfaces = _extract_surface_values(data)
+        if not surfaces:
+            return False
+        return not any(s in PAVED_SURFACES for s in surfaces)
 
     # Calculate totals
     alley_km = calculate_edge_length_km(graph, is_alley)
