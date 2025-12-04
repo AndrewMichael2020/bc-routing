@@ -93,6 +93,7 @@ def main():
     p.add_argument("--routes-per", type=int, default=5)
     p.add_argument("--hubs", type=int, default=1, help="Number of hubs to place nurses at")
     p.add_argument("--patients", type=int, default=0, help="Number of patient homes to generate (if >0 overrides --routes-per logic)")
+    p.add_argument("--cluster-radius", type=float, default=0.0, help="Cluster radius in km around hubs for patient generation (0 = global random)")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--output", default="./data/routes_summary.csv")
     p.add_argument("--map-output", default="./data/routes_map.html", help="Optional HTML map output (requires folium)")
@@ -149,7 +150,55 @@ def main():
                 nid += 1
 
         # pick patient nodes
-        patients = select_valid_nodes(G, args.patients, seed=args.seed + 2)
+        # If cluster radius given, sample patients around each hub within that radius (km)
+        cluster_radius_km = float(args.cluster_radius or 0.0)
+        patients = []
+
+        def haversine_km(a_lat, a_lon, b_lat, b_lon):
+            from math import radians, sin, cos, sqrt, asin
+            R = 6371.0
+            dlat = radians(b_lat - a_lat)
+            dlon = radians(b_lon - a_lon)
+            u = sin(dlat/2)**2 + cos(radians(a_lat))*cos(radians(b_lat))*sin(dlon/2)**2
+            return 2*R*asin(sqrt(u))
+
+        # build a quick node coordinate lookup
+        node_coords = {n: (d.get('y'), d.get('x')) for n, d in G.nodes(data=True)}
+
+        if cluster_radius_km > 0:
+            per_hub = args.patients // hubs
+            rem = args.patients % hubs
+            rng = random.Random(args.seed + 2)
+            for i, hub in enumerate(hub_nodes):
+                want = per_hub + (1 if i < rem else 0)
+                hub_latlon = node_coords.get(hub)
+                candidates = []
+                if hub_latlon:
+                    hlat, hlon = hub_latlon
+                    for n, (lat, lon) in node_coords.items():
+                        if lat is None or lon is None:
+                            continue
+                        if haversine_km(hlat, hlon, lat, lon) <= cluster_radius_km:
+                            candidates.append(n)
+                # fallback to global sampling if insufficient
+                if len(candidates) < want:
+                    all_nodes = [n for n, d in G.degree() if d >= 1]
+                    # choose nearest available or random if still short
+                    rng.shuffle(all_nodes)
+                    for n in all_nodes:
+                        if n not in candidates:
+                            candidates.append(n)
+                        if len(candidates) >= want:
+                            break
+
+                # sample without replacement
+                if want > len(candidates):
+                    sel = candidates[:]
+                else:
+                    sel = rng.sample(candidates, want)
+                patients.extend(sel)
+        else:
+            patients = select_valid_nodes(G, args.patients, seed=args.seed + 2)
 
         print(f"Placing {len(nurses)} nurses across {len(hub_nodes)} hubs; {len(patients)} patients")
 
