@@ -72,6 +72,8 @@ def main():
     p.add_argument("--graph", required=True, help="Path to merged GraphML file")
     p.add_argument("--nurses", type=int, default=2)
     p.add_argument("--routes-per", type=int, default=5)
+    p.add_argument("--hubs", type=int, default=1, help="Number of hubs to place nurses at")
+    p.add_argument("--patients", type=int, default=0, help="Number of patient homes to generate (if >0 overrides --routes-per logic)")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--output", default="./data/routes_summary.csv")
     p.add_argument("--map-output", default="./data/routes_map.html", help="Optional HTML map output (requires folium)")
@@ -98,29 +100,64 @@ def main():
 
     random.seed(args.seed)
 
-    # pick nurse home nodes
-    nurse_origins = select_valid_nodes(G, args.nurses, seed=args.seed)
-
-    # prepare targets - pick a pool of candidate patient nodes
-    candidate_count = args.nurses * args.routes_per * 4
-    candidates = select_valid_nodes(G, candidate_count, seed=args.seed + 1)
-
     rows = []
     route_id = 0
-    max_attempts = 1000
     route_paths = []
 
-    for i, origin in enumerate(nurse_origins, start=1):
-        assigned = 0
-        attempts = 0
-        while assigned < args.routes_per and attempts < max_attempts:
-            attempts += 1
-            dest = random.choice(candidates)
-            if dest == origin:
-                continue
+    # If patients > 0, we'll generate per-patient routes: place hubs, assign nurses to hubs,
+    # pick patient home nodes, then assign each patient to the nearest nurse by travel time.
+    if args.patients and args.patients > 0:
+        hubs = args.hubs if args.hubs > 0 else 1
+        # select hub nodes
+        hub_nodes = select_valid_nodes(G, hubs, seed=args.seed)
+
+        # distribute nurses across hubs (as evenly as possible)
+        nurses = []
+        per_hub = args.nurses // hubs
+        remainder = args.nurses % hubs
+        nid = 1
+        for idx, hub in enumerate(hub_nodes):
+            count = per_hub + (1 if idx < remainder else 0)
+            for _ in range(count):
+                nurses.append((f"nurse_{nid}", hub))
+                nid += 1
+
+        # pick patient nodes
+        patients = select_valid_nodes(G, args.patients, seed=args.seed + 2)
+
+        print(f"Placing {len(nurses)} nurses across {len(hub_nodes)} hubs; {len(patients)} patients")
+
+        # precompute shortest path lengths from each nurse to all nodes (use Dijkstra single-source)
+        nurse_costs = {}
+        for nurse_id, origin in nurses:
             try:
-                path = nx.shortest_path(G, origin, dest, weight=weight_attr)
+                costs = nx.single_source_dijkstra_path_length(G, origin, weight=weight_attr)
+            except Exception:
+                costs = {}
+            nurse_costs[nurse_id] = (origin, costs)
+
+        # assign each patient to nearest nurse
+        for patient in patients:
+            best = None
+            best_cost = None
+            best_origin = None
+            for nurse_id, (origin, costs) in nurse_costs.items():
+                c = costs.get(patient)
+                if c is None:
+                    continue
+                if best_cost is None or c < best_cost:
+                    best_cost = c
+                    best = nurse_id
+                    best_origin = origin
+            if best is None:
+                # no reachable nurse for this patient
+                print(f"No reachable nurse found for patient node {patient}; skipping")
+                continue
+
+            try:
+                path = nx.shortest_path(G, best_origin, patient, weight=weight_attr)
             except (nx.NetworkXNoPath, nx.NodeNotFound):
+                print(f"No path to patient {patient} from nurse {best}; skipping")
                 continue
 
             # compute metrics
@@ -137,19 +174,114 @@ def main():
             route_id += 1
             rows.append({
                 "route_id": route_id,
-                "nurse_id": f"nurse_{i}",
-                "origin": origin,
-                "destination": dest,
+                "nurse_id": best,
+                "origin": best_origin,
+                "destination": patient,
                 "nodes_in_path": len(path),
                 "length_km": round(length_km, 3),
                 "travel_min": round(time_min, 2),
             })
-            # keep the full path for mapping
-            route_paths.append((route_id, f"nurse_{i}", path, length_km, time_min))
+            route_paths.append((route_id, best, path, length_km, time_min))
+            print(f"Route {route_id}: {best} {best_origin} -> {patient} | {length_km:.3f} km | {time_min:.2f} min")
 
-            print(f"Route {route_id}: nurse_{i} {origin} -> {dest} | {length_km:.3f} km | {time_min:.2f} min")
+    else:
+        # fallback: previous behaviour (nurses origins sampled, routes per nurse)
+        nurse_origins = select_valid_nodes(G, args.nurses, seed=args.seed)
+        # prepare targets - pick a pool of candidate patient nodes
+        candidate_count = args.nurses * args.routes_per * 4
+        candidates = select_valid_nodes(G, candidate_count, seed=args.seed + 1)
 
-            assigned += 1
+        max_attempts = 1000
+        for i, origin in enumerate(nurse_origins, start=1):
+            assigned = 0
+            attempts = 0
+            while assigned < args.routes_per and attempts < max_attempts:
+                attempts += 1
+                dest = random.choice(candidates)
+                if dest == origin:
+                    continue
+                try:
+                    path = nx.shortest_path(G, origin, dest, weight=weight_attr)
+                except (nx.NetworkXNoPath, nx.NodeNotFound):
+                    continue
+
+                # compute metrics
+                if weight_attr == "length":
+                    length_m = route_summary(G, path, weight_attr="length")
+                    time_sec = route_summary(G, path, weight_attr="travel_time")
+                else:
+                    time_sec = route_summary(G, path, weight_attr="travel_time")
+                    length_m = route_summary(G, path, weight_attr="length")
+
+                length_km = (length_m or 0.0) / 1000.0
+                time_min = (time_sec or 0.0) / 60.0
+
+                route_id += 1
+                rows.append({
+                    "route_id": route_id,
+                    "nurse_id": f"nurse_{i}",
+                    "origin": origin,
+                    "destination": dest,
+                    "nodes_in_path": len(path),
+                    "length_km": round(length_km, 3),
+                    "travel_min": round(time_min, 2),
+                })
+                # keep the full path for mapping
+                route_paths.append((route_id, f"nurse_{i}", path, length_km, time_min))
+
+                print(f"Route {route_id}: nurse_{i} {origin} -> {dest} | {length_km:.3f} km | {time_min:.2f} min")
+
+                assigned += 1
+
+    # Compute and print summary statistics for generated routes
+    def percentile(sorted_vals, p):
+        """Return percentile p (0..100) for sorted_vals using linear interpolation."""
+        if not sorted_vals:
+            return None
+        k = (len(sorted_vals) - 1) * (p / 100.0)
+        f = int(k)
+        c = f + 1
+        if c >= len(sorted_vals):
+            return float(sorted_vals[-1])
+        d0 = sorted_vals[f] * (c - k)
+        d1 = sorted_vals[c] * (k - f)
+        return float(d0 + d1)
+
+    lengths = [r[3] for r in route_paths]
+    times = [r[4] for r in route_paths]
+
+    if route_paths:
+        lengths_sorted = sorted(lengths)
+        times_sorted = sorted(times)
+
+        # print five stats: min, Q1, median, mean, Q3
+        stats = {
+            "min": lambda a: a[0],
+            "q1": lambda a: percentile(a, 25),
+            "median": lambda a: percentile(a, 50),
+            "mean": lambda a: (sum(a) / len(a)) if a else None,
+            "q3": lambda a: percentile(a, 75),
+        }
+
+        order = ["min", "q1", "median", "mean", "q3"]
+
+        print("\nROUTE STATISTICS (km):")
+        print("  {:<8} {:>8}".format("Metric", "Value"))
+        for k in order:
+            v = stats[k](lengths_sorted)
+            if v is None:
+                print(f"  {k:<8} {'-':>8}")
+            else:
+                print(f"  {k:<8} {v:8.3f}")
+
+        print("\nROUTE STATISTICS (minutes):")
+        print("  {:<8} {:>8}".format("Metric", "Value"))
+        for k in order:
+            v = stats[k](times_sorted)
+            if v is None:
+                print(f"  {k:<8} {'-':>8}")
+            else:
+                print(f"  {k:<8} {v:8.2f}")
 
     # write CSV
     outp = Path(args.output)
